@@ -1,6 +1,6 @@
 package com.dj
 
-import org.apache.spark.{SparkContext, SparkConf}
+import com.dj.LdaTrain
 import org.clapper.argot._
 import ArgotConverters._
 
@@ -71,9 +71,9 @@ object Entry {
         case None => 5
       }
 
-      val conf = new SparkConf().setAppName("LDA")
-      val sc = new SparkContext(conf)
-
+      val ldaTrain = new LdaTrain(inputPath,
+        outputPath,topicNumber,iteratorTime,alpha,beta,maxWords,minDf)
+      ldaTrain.init
     } catch {
       case e: ArgotUsageException => println(e.message)
     }
