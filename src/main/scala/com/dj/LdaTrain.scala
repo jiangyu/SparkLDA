@@ -1,41 +1,64 @@
 package com.dj
 
-import org.apache.spark.{SparkContext, SparkConf}
+import org.apache.spark.{AccumulatorParam, SparkContext, SparkConf}
 import org.apache.spark.SparkContext._
+import org.apache.spark.mllib.linalg.{Matrix, Matrices}
+import org.jblas.DoubleMatrix
+
+
+import scala.util.Random
 
 /**
  * Created by jiangyu on 3/18/15.
  */
 class LdaTrain(val inputPath:String, val outputPath:String, val topicNumber:Int,
-                val iteratorTime:Int, val alpha:Double, val beta:Double, val maxWords:Int,
+                val iteratorTime:Int, val alpha:Double, val beta:Double,
 val minDf:Int) {
   private val conf = new SparkConf().setAppName("LDA")
   private val sc = new SparkContext(conf)
+  private var wordsAll:Int = 0
 
   def init = {
     val initParameters = sc.broadcast(Array(alpha,beta,topicNumber))
     val lines = sc.textFile(inputPath,20)
-    val initWordList = lines.flatMap(wordFetch(_))
-    val trainingWord = initWordList.reduceByKey((x,y) => (x._1+y._1,x._2+y._2))
-    val allDocWordNumber = trainingWord.filter(words => words._1==" ")
-    val broadcastDocWordNumber = sc.broadcast(allDocWordNumber.take(1))
-    val wordList = trainingWord.filter(word => word._1!=" " && word._2._1 > 0)
-      .mapPartitions{wordsAll =>
-      val sum = broadcastDocWordNumber.value(0)._2
-      val result = wordsAll.map{ case(word,(tf,df)) =>
-          val tfdf = 1.0* tf / sum._1 * Math.log(sum._2*1.0/df)
-        (tfdf,word)
+    val wordsNumber = lines.flatMap(_.split("""\ +""")).distinct(20).count().toInt
+    wordsAll = wordsNumber
+    val vecAccum = sc.accumulator(new DoubleMatrix(wordsAll,topicNumber,
+      Array.fill(wordsAll*topicNumber)(0.0):_*))
+    val wordsParameters = sc.broadcast(wordsNumber)
+
+    val init = lines.mapPartitions{iter =>
+      val random = new Random()
+      val topicNumber = initParameters.value(2).toInt
+      val wordsNumber = wordsParameters.value.toInt
+      val wtLocal = Array.fill(wordsNumber*topicNumber)(0.0)
+      val result = iter.map{ case (line) =>
+        val words = line.split("""\ +""").map{word =>
+          val randomTopic = random.nextInt(topicNumber)
+          val wordNumber = Integer.parseInt(word)
+          wtLocal(wordNumber*topicNumber+randomTopic)  +=  1
+          (wordNumber,randomTopic)
+        }
+        words.toIterable
       }
-      result.toIterator
-    }.sortByKey(false)
+      val wtMatrix:DoubleMatrix = new DoubleMatrix(wordsNumber,topicNumber,wtLocal:_*)
+      vecAccum+=wtMatrix
+      result
+    }
+
+    vecAccum.value
   }
 
-  def wordFetch(line:String):Iterable[(String,(Int,Int))] = {
-        var wordsSum:Int = 0
-        val wordFrenq = line.split("""\ +""").seq.groupBy(word=>word).map{case (word,time) =>
-            wordsSum+=time.length;(word,(time.length,1))}
-        val wordFrenqAll = wordFrenq + (" " -> (wordsSum,1))
-        wordFrenqAll.toIterable
+
+
+  implicit object MatrixAccumulatorParam extends AccumulatorParam[DoubleMatrix] {
+    def zero(init:DoubleMatrix) : DoubleMatrix = {
+      init
+    }
+
+    def addInPlace(m1:DoubleMatrix, m2:DoubleMatrix) :DoubleMatrix = {
+      m1.add(m2)
+    }
   }
 
 

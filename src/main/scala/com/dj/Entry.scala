@@ -22,8 +22,8 @@ object Entry {
     "alpha","Alpha for training, default 50/numTopic")
   val betaOption = parser.option[Double](List("beta","b"),
     "beta","Beta for training, default 0.01")
-  val maxNumberOption = parser.option[Int](List("maxWords"),
-    "max words to process","Max number of words to process,default is 1000000")
+//  val maxNumberOption = parser.option[Int](List("maxWords"),
+//    "max words to process","Max number of words to process,default is 1000000")
   val minDfOption = parser.option[Int](List("minTime"),
     "min times for words to show","The minimun time for one word to show in all docs,default 5")
 
@@ -61,10 +61,10 @@ object Entry {
         case None => 0.01
       }
 
-      val maxWords:Int = maxNumberOption.value match {
-        case Some(maxWords) => maxWords.toInt
-        case None => 10000000
-      }
+//      val maxWords:Int = maxNumberOption.value match {
+//        case Some(maxWords) => maxWords.toInt
+//        case None => 10000000
+//      }
 
       val minDf:Int = minDfOption.value match {
         case Some(minDf) => minDf.toInt
@@ -72,7 +72,7 @@ object Entry {
       }
 
       val ldaTrain = new LdaTrain(inputPath,
-        outputPath,topicNumber,iteratorTime,alpha,beta,maxWords,minDf)
+        outputPath,topicNumber,iteratorTime,alpha,beta,minDf)
       ldaTrain.init
     } catch {
       case e: ArgotUsageException => println(e.message)

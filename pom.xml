@@ -24,6 +24,11 @@
             <artifactId>argot_2.10</artifactId>
             <version>1.0.3</version>
         </dependency>
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-mllib_2.10</artifactId>
+            <version>1.2.1</version>
+        </dependency>
     </dependencies>
 
     <build>
