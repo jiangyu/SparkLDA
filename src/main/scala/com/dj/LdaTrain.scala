@@ -1,11 +1,10 @@
 package com.dj
 
+import org.apache.spark.rdd.RDD
 import org.apache.spark.{AccumulatorParam, SparkContext, SparkConf}
 import org.apache.spark.SparkContext._
 import org.apache.spark.mllib.linalg.{Matrix, Matrices}
 import org.jblas.DoubleMatrix
-
-
 import scala.util.Random
 
 /**
@@ -25,31 +24,43 @@ val minDf:Int) {
     wordsAll = wordsNumber
     val vecAccum = sc.accumulator(new DoubleMatrix(wordsAll,topicNumber,
       Array.fill(wordsAll*topicNumber)(0.0):_*))
+    val arrayAccum = sc.accumulable(Array.fill[Int](wordsNumber*topicNumber)(0))
     val wordsParameters = sc.broadcast(wordsNumber)
 
-    val init = lines.mapPartitions{iter =>
+    val wftf = lines.mapPartitions{iter =>
       val random = new Random()
       val topicNumber = initParameters.value(2).toInt
       val wordsNumber = wordsParameters.value.toInt
-      val wtLocal = Array.fill(wordsNumber*topicNumber)(0.0)
+      val wtLocal = Array.fill[Int](wordsNumber*topicNumber)(0)
       val result = iter.map{ case (line) =>
         val words = line.split("""\ +""").map{word =>
           val randomTopic = random.nextInt(topicNumber)
           val wordNumber = Integer.parseInt(word)
-          wtLocal(wordNumber*topicNumber+randomTopic)  +=  1
+          // for some reason i can't explain, it does not work here
+//          wtLocal(wordNumber*topicNumber+randomTopic)  +=  1
           (wordNumber,randomTopic)
         }
         words.toIterable
       }
-      val wtMatrix:DoubleMatrix = new DoubleMatrix(wordsNumber,topicNumber,wtLocal:_*)
-      vecAccum+=wtMatrix
+
+      for(iter <- result) {
+        iter.map { case (a, b) =>
+          wtLocal(a*topicNumber+b) +=1
+        }
+      }
+
+      arrayAccum+=wtLocal
       result
     }
 
-    vecAccum.value
+    println("Docs initialized.")
+    wftf
   }
 
+  // Begin iterations
+  def train(wftf:RDD[Iterable[(Int,Int)]]) = {
 
+  }
 
   implicit object MatrixAccumulatorParam extends AccumulatorParam[DoubleMatrix] {
     def zero(init:DoubleMatrix) : DoubleMatrix = {
@@ -61,7 +72,17 @@ val minDf:Int) {
     }
   }
 
+  implicit object ArrayAccumulatorParam extends AccumulatorParam[Array[Int]] {
+    def zero(init:Array[Int]) : Array[Int] = {
+      val dd = Array.fill[Int](init.length)(0)
+      dd
+    }
 
-  def train = {
+    def addInPlace(m1:Array[Int], m2:Array[Int]): Array[Int] = {
+      for(i <- (0 until m1.length))
+        m1(i)+=m2(i)
+      m1
+    }
   }
+
 }
