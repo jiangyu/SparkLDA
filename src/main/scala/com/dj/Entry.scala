@@ -1,6 +1,5 @@
 package com.dj
 
-import com.dj.LdaTrain
 import org.clapper.argot._
 import ArgotConverters._
 
@@ -73,7 +72,8 @@ object Entry {
 
       val ldaTrain = new LdaTrain(inputPath,
         outputPath,topicNumber,iteratorTime,alpha,beta,minDf)
-      ldaTrain.init
+      val init = ldaTrain.init
+      ldaTrain.train(init._1,init._2)
     } catch {
       case e: ArgotUsageException => println(e.message)
     }
