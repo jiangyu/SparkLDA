@@ -48,9 +48,8 @@ val minDf:Int) {
       }
       wtLocal.toIterator
     }.reduce{case(first,second) =>
-      for(i<-(0 until first.length)){
+      for(i <- 0 until first.length)
         first(i) += second(i)
-      }
       first
     }
 
@@ -61,27 +60,55 @@ val minDf:Int) {
   // Begin iterations
   def train(wftf:RDD[Iterable[(Int,Int)]],wt:Array[Int]) = {
     println("Begin iteration for "+iteratorTime+" times")
-    for(i <- (0 until iteratorTime)) {
-      val wtParam = sc.broadcast(wt)
+    var nextRound:RDD[Iterable[(Int,Int)]] = null
+    var current:RDD[Iterable[(Int,Int)]] = null
+    var wtTransfer:Array[Int] = Array.fill[Int](wordsAll*topicNumber)(0)
 
-      val d = wftf.mapPartitions{iter =>
-          // very big wzMatrix
+    for(i <- (0 until iteratorTime)) {
+      if(i == 0) {
+        current = wftf
+        wtTransfer = wt
+      }
+      else {
+        current = nextRound
+        wtTransfer =  nextRound.mapPartitions{iter =>
+          val wtLocal = Array.ofDim[Int](1,wordsAll*topicNumber)
+          for(doc <- iter) {
+            doc.map{ case(word,topic) =>
+              wtLocal(0)(word*topicNumber + topic) += 1
+            }
+          }
+          wtLocal.toIterator
+        }.reduce{case(first,second) =>
+          for(i<-(0 until first.length)){
+            first(i) += second(i)
+          }
+          first
+        }
+      }
+      val wtParam = sc.broadcast(wtTransfer.clone())
+
+      nextRound = current.mapPartitions{iter =>
+//      val d  =  wftf.mapPartitions{iter =>
+        // very big wzMatrix
         val wzMatrix = wtParam.value
         var nzd:Array[Int] = Array.fill[Int](topicNumber)(0)
-        var nz:Array[Int] = Array.fill[Int](topicNumber)(0)
+        val nz:Array[Int] = Array.fill[Int](topicNumber)(0)
+        for(i<- 0 until wzMatrix.length) {
+          nz(i%topicNumber) += wzMatrix(i)
+        }
         val delta:Array[Int] = Array.fill[Int](wordsAll*topicNumber)(0)
         var probs = Array.fill[Double](topicNumber)(0.0)
         val random = new Random()
 
-        val c = for(doc <- iter) yield {
+        val nextWftf = for(doc <- iter) yield {
           nzd = Array.fill[Int](topicNumber)(0)
-          nz = Array.fill[Int](topicNumber)(0)
           doc.map{case(word,topic) =>
-              nzd(topic) += 1
+            nzd(topic) += 1
           }
 
           var likelihood = 0.0
-          var docSize = doc.size
+          val docSize = doc.size
 
           doc.map{case(word,topic) =>
             nzd(topic) -= 1
@@ -97,55 +124,25 @@ val minDf:Int) {
             delta(word*topicNumber + nextTopic) += 1
             (word,nextTopic)
           }.toIterable
-
         }
 
-//          val changeIter = iter.toIterable.map{docIter=>
-//            nzd = Array.fill[Int](topicNumber)(0)
-//            nz = Array.fill[Int](topicNumber)(0)
-//            docIter.map{ pair =>
-//              nzd(pair._2) += 1
-//            }
-////
-//            var likelihood = 0.0
-//
-//            val changePair = docIter.map{ pair =>
-//              nzd(pair._2) -= 1
-//              nz(pair._2) -= 1
-//              wzMatrix(pair._1*topicNumber + pair._2) -= 1
-//              println(pair._1 +" "+pair._2)
-//              println(wzMatrix(pair._1*topicNumber+pair._2))
-//              delta(pair._1*topicNumber + pair._2) -= 1
-//              probs = Array.fill[Double](topicNumber)(0.0)
-//              likelihood += computeSamplingProbablity(wzMatrix,nzd,nz,pair._1,probs,docIter.size)
-//              val nextTopic = sampleDistribution(probs, random)
-//              nzd(nextTopic) += 1
-//              nz(nextTopic) += 1
-//              wzMatrix(pair._1*topicNumber + nextTopic) += 1
-//              delta(pair._1*topicNumber + nextTopic) += 1
-//              (pair._1,nextTopic)
-//            }
-//
-//            changePair.toIterable
-//          }
-//
-//          changeIter.toIterator
-//          iter
-        c.toIterator
-        }
+        nextWftf.toIterator
+      }
     }
+
+    sc.makeRDD(wtTransfer).saveAsTextFile(outputPath)
+
   }
 
   private def sampleDistribution(probs:Array[Double], random:Random) :Int = {
     val sample = random.nextDouble()
     var sum = 0.0
-    var returnTopic = 0
+    var returnTopic = probs.length - 1
     for(i <- (0 until probs.length)) {
       sum += probs(i)
+//      println(i+" "+sum+" "+sample)
       if(sample < sum)
-        returnTopic  = i
-      else
-        returnTopic = probs.length - 1
+        return i
     }
     returnTopic
   }
@@ -153,18 +150,20 @@ val minDf:Int) {
   private def computeSamplingProbablity(nwz:Array[Int],nzd:Array[Int], nz:Array[Int],
                                 word:Int,probs:Array[Double],length:Int) : Double = {
     var norm = 0.0
-    var dummyNorm = 1.0
     var likelihood = 0.0
     for(i <-(0 until topicNumber)) {
       val pwz = (nwz(word*topicNumber+i) + beta)  / (nz(i)+nwz.length*beta)
       val pzd = (nzd(i) + alpha) / (length + topicNumber*alpha)
       probs(i) = pwz * pzd
       norm += probs(i)
+//      println(i+" "+nwz(word*topicNumber+i)+" "+nz(i)+" "+pwz+" "+pzd+" "+probs(i)+" "+norm)
       likelihood += pwz
     }
 
-    for(i <- (0 until topicNumber))
+    for(i <- 0 until topicNumber) {
       probs(i) /= norm
+//      println("cao "+i +" "+probs(i))
+    }
     likelihood
   }
 
