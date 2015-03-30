@@ -14,24 +14,10 @@ val minDf:Int) {
   private val sc = new SparkContext(conf)
   private var wordsAll:Int = 0
 
-
-  implicit object ArrayAccumulatorParam extends AccumulatorParam[Array[Int]] {
-    def zero(init:Array[Int]) : Array[Int] = {
-      Array.fill[Int](init.length)(0)
-    }
-
-    def addInPlace(m1:Array[Int], m2:Array[Int]): Array[Int] = {
-      for(i <- (0 until m1.length))
-        m1(i)+=m2(i)
-      m1
-    }
-  }
-
   def init = {
     val initParameters = sc.broadcast(Array(alpha,beta,topicNumber))
     val lines = sc.textFile(inputPath,20)
     val wordsNumber = lines.flatMap(_.split("""\ +""")).distinct(20).count().toInt
-    val arrayAccum = sc.accumulable(Array.fill[Int](wordsNumber*topicNumber)(0))
     wordsAll = wordsNumber
     val wordsParameters = sc.broadcast(wordsNumber)
 
@@ -39,35 +25,28 @@ val minDf:Int) {
       val iter = iterator.toIterable
       val random = new Random()
       val topicNumber = initParameters.value(2).toInt
-      val wordsNumber = wordsParameters.value.toInt
-//      val wtLocal = Array.fill[Int](wordsNumber*topicNumber)(0)
 
       val result = iter.map{ case (line) =>
         val words = line.split("""\ +""").map{word =>
           val randomTopic = random.nextInt(topicNumber)
           val wordNumber = Integer.parseInt(word)
-//          wtLocal(wordNumber*topicNumber+randomTopic)  +=  1
           println(wordNumber+" "+randomTopic)
           (wordNumber,randomTopic)
         }
         words.toIterable
       }
-//      result.tail
-//      arrayAccum+=wtLocal
       result.toIterator
     }.persist()
 
 
-    val d = wftf.mapPartitions{iter =>
-      val wt = Array.ofDim[Int](1,wordsNumber*topicNumber)
-      //      val wt = Array.fill[Int](wordsNumber*topicNumber)(0)
-      iter.toIterable.map{doc =>
+    val wt = wftf.mapPartitions{iter =>
+      val wtLocal = Array.ofDim[Int](1,wordsNumber*topicNumber)
+      for(doc <- iter) {
         doc.map{ case(word,topic) =>
-          wt(0)(word*topicNumber + topic) += 1
+          wtLocal(0)(word*topicNumber + topic) += 1
         }
-
       }
-      wt.iterator
+      wtLocal.toIterator
     }.reduce{case(first,second) =>
       for(i<-(0 until first.length)){
         first(i) += second(i)
@@ -75,67 +54,84 @@ val minDf:Int) {
       first
     }
 
-
-    val wt = Array.fill[Int](wordsNumber*topicNumber)(0)
-    wftf.map{iter =>
-      iter.map{case(word,topic) =>
-        wt(word*topicNumber+topic)  +=  1
-      }
-    }
-
     println("Docs initialized.")
-    arrayAccum.setValue(Array.fill[Int](wordsNumber*topicNumber)(0))
-    for(i <-(0 until arrayAccum.zero.length)) {
-      arrayAccum.zero(i) = 0
-    }
-    (wftf, arrayAccum)
+    (wftf, wt)
   }
 
   // Begin iterations
-  def train(wftf:RDD[Iterable[(Int,Int)]],wt:Accumulable[Array[Int],Array[Int]]) = {
+  def train(wftf:RDD[Iterable[(Int,Int)]],wt:Array[Int]) = {
     println("Begin iteration for "+iteratorTime+" times")
     for(i <- (0 until iteratorTime)) {
-      val wtParam = sc.broadcast(wt.value)
-        val d = wftf.mapPartitions{iter =>
+      val wtParam = sc.broadcast(wt)
+
+      val d = wftf.mapPartitions{iter =>
           // very big wzMatrix
-          val wzMatrix = wtParam.value
-          for(i <- (0 until wzMatrix.length)) {
-            print(wzMatrix(i)+" ")
-          }
-          var nzd:Array[Int] = Array.fill[Int](topicNumber)(0)
-          var nz:Array[Int] = Array.fill[Int](topicNumber)(0)
-          var delta:Array[Int] = Array.fill[Int](wordsAll*topicNumber)(0)
-          var probs = Array.fill[Double](topicNumber)(0.0)
-          val random = new Random()
+        val wzMatrix = wtParam.value
+        var nzd:Array[Int] = Array.fill[Int](topicNumber)(0)
+        var nz:Array[Int] = Array.fill[Int](topicNumber)(0)
+        val delta:Array[Int] = Array.fill[Int](wordsAll*topicNumber)(0)
+        var probs = Array.fill[Double](topicNumber)(0.0)
+        val random = new Random()
 
-          val changeIter = iter.map{docIter=>
-            nzd = Array.fill[Int](topicNumber)(0)
-            nz = Array.fill[Int](topicNumber)(0)
-            docIter.map{ pair =>
-              nzd(pair._2) += 1
-            }
-
-            var likelihood = 0.0
-
-            val changePair = docIter.map{ pair =>
-              nzd(pair._2) -= 1
-              nz(pair._2) -= 1
-              wzMatrix(pair._1*topicNumber + pair._2) -= 1
-              delta(pair._1*topicNumber + pair._2) -= 1
-              probs = Array.fill[Double](topicNumber)(0.0)
-              likelihood += computeSamplingProbablity(wzMatrix,nzd,nz,pair._1,probs,docIter.size)
-              val nextTopic = sampleDistribution(probs, random)
-              nzd(nextTopic) += 1
-              nz(nextTopic) += 1
-              wzMatrix(pair._1*topicNumber + nextTopic) += 1
-              delta(pair._1*topicNumber + nextTopic) += 1
-              (pair._1,nextTopic)
-            }
-
-            changePair.toIterable
+        val c = for(doc <- iter) yield {
+          nzd = Array.fill[Int](topicNumber)(0)
+          nz = Array.fill[Int](topicNumber)(0)
+          doc.map{case(word,topic) =>
+              nzd(topic) += 1
           }
 
-          changeIter.toIterator
+          var likelihood = 0.0
+          var docSize = doc.size
+
+          doc.map{case(word,topic) =>
+            nzd(topic) -= 1
+            nz(topic) -= 1
+            wzMatrix(word*topicNumber + topic ) -= 1
+            delta(word*topicNumber + topic) -= 1
+            probs = Array.fill[Double](topicNumber)(0.0)
+            likelihood += computeSamplingProbablity(wzMatrix,nzd,nz,word,probs,docSize)
+            val nextTopic = sampleDistribution(probs, random)
+            nzd(nextTopic) += 1
+            nz(nextTopic) += 1
+            wzMatrix(word*topicNumber + nextTopic) += 1
+            delta(word*topicNumber + nextTopic) += 1
+            (word,nextTopic)
+          }.toIterable
+
+        }
+
+//          val changeIter = iter.toIterable.map{docIter=>
+//            nzd = Array.fill[Int](topicNumber)(0)
+//            nz = Array.fill[Int](topicNumber)(0)
+//            docIter.map{ pair =>
+//              nzd(pair._2) += 1
+//            }
+////
+//            var likelihood = 0.0
+//
+//            val changePair = docIter.map{ pair =>
+//              nzd(pair._2) -= 1
+//              nz(pair._2) -= 1
+//              wzMatrix(pair._1*topicNumber + pair._2) -= 1
+//              println(pair._1 +" "+pair._2)
+//              println(wzMatrix(pair._1*topicNumber+pair._2))
+//              delta(pair._1*topicNumber + pair._2) -= 1
+//              probs = Array.fill[Double](topicNumber)(0.0)
+//              likelihood += computeSamplingProbablity(wzMatrix,nzd,nz,pair._1,probs,docIter.size)
+//              val nextTopic = sampleDistribution(probs, random)
+//              nzd(nextTopic) += 1
+//              nz(nextTopic) += 1
+//              wzMatrix(pair._1*topicNumber + nextTopic) += 1
+//              delta(pair._1*topicNumber + nextTopic) += 1
+//              (pair._1,nextTopic)
+//            }
+//
+//            changePair.toIterable
+//          }
+//
+//          changeIter.toIterator
+//          iter
+        c.toIterator
         }
     }
   }
