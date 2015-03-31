@@ -34,32 +34,48 @@ val minDf:Int) {
       (number,words)
     }.partitionBy(new HashPartitioner(20)).persist()
 
-    wftf.reduceByKey{case(first,second)=>
-      val result = Array.fill[(Int,Int)](first.length)((0,0))
-      for(i <- 0 until first.length)
-        first(i) += second(i)
-        first
-    }
+    val wt = wftf.combineByKey[Array[Int]](
+      createCombiner = (v: Array[(Int,Int)]) => {
+        val result = Array.fill[Int](wordsAll*topicNumber)(0)
+        for(i <- 0 until v.length) {
+          val index = v(i)._1 * topicNumber + v(i)._2
+          result(index) += 1
+        }
+        result
+      },
+      mergeValue = (c: Array[Int], v: Array[(Int,Int)]) => {
+        for(i <- 0 until v.length) {
+          val index = v(i)._1 * topicNumber + v(i)._2
+          c(index) += 1
+        }
+        c
+      },
+      mergeCombiners = (c1: Array[Int], c2: Array[Int]) => {
+        for(i <- 0 until c1.length) {
+          c1(i) += c2(i)
+        }
+        c1
+      }
+    ).repartition(5).mapPartitions{iter =>
+                  val wtLocal = Array.ofDim[Int](1,wordsNumber*topicNumber)
+                  for(array <- iter) {
+                    for(i <- 0 until array._2.length) {
+                      wtLocal(0)(i) += array._2(i)
+                    }
+                  }
+                  wtLocal.toIterator
+                }.reduce{case(first,second) =>
+                  for(i <- 0 until first.length)
+                    first(i) += second(i)
+                  first
+                }
 
-    val wt = wftf.mapPartitions{iter =>
-            val wtLocal = Array.ofDim[Int](1,wordsNumber*topicNumber)
-            for(doc <- iter) {
-              for(i <- 0 until doc._2.length) {
-                val word = doc._2(i)._1
-                val topic = doc._2(i)._2
-                wtLocal(0)(word*topicNumber + topic) += 1
-              }
-            }
-            wtLocal.toIterator
-          }.reduce{case(first,second) =>
-            for(i <- 0 until first.length)
-              first(i) += second(i)
-            first
-          }
+
 
     println("Docs initialized.")
     (wftf, wt)
   }
+
 
   // Begin iterations
   def train(wftf:RDD[(Int,Array[(Int,Int)])],wt:Array[Int]) = {
@@ -71,13 +87,33 @@ val minDf:Int) {
         wtTransfer = wt
       }
       else {
-        wtTransfer = wftf.mapPartitions{iter =>
+        wtTransfer = wftf.combineByKey[Array[Int]](
+          createCombiner = (v: Array[(Int,Int)]) => {
+            val result = Array.fill[Int](wordsAll*topicNumber)(0)
+            for(i <- 0 until v.length) {
+              val index = v(i)._1 * topicNumber + v(i)._2
+              result(index) += 1
+            }
+            result
+          },
+          mergeValue = (c: Array[Int], v: Array[(Int,Int)]) => {
+            for(i <- 0 until v.length) {
+              val index = v(i)._1 * topicNumber + v(i)._2
+              c(index) += 1
+            }
+            c
+          },
+          mergeCombiners = (c1: Array[Int], c2: Array[Int]) => {
+            for(i <- 0 until c1.length) {
+              c1(i) += c2(i)
+            }
+            c1
+          }
+        ).repartition(5).mapPartitions{iter =>
           val wtLocal = Array.ofDim[Int](1,wordsAll*topicNumber)
-          for(doc <- iter) {
-            for(i <- 0 until doc._2.length) {
-              val word = doc._2(i)._1
-              val topic = doc._2(i)._2
-              wtLocal(0)(word*topicNumber + topic) += 1
+          for(array <- iter) {
+            for(i <- 0 until array._2.length) {
+              wtLocal(0)(i) += array._2(i)
             }
           }
           wtLocal.toIterator
