@@ -70,8 +70,6 @@ val minDf:Int) {
                   first
                 }
 
-
-
     println("Docs initialized.")
     (wftf, wt)
   }
@@ -80,7 +78,7 @@ val minDf:Int) {
   // Begin iterations
   def train(wftf:RDD[(Int,Array[(Int,Int)])],wt:Array[Int]) = {
     println("Begin iteration for "+iteratorTime+" times")
-    var wtTransfer:Array[Int] = Array.fill[Int](wordsAll*topicNumber)(0)
+    var wtTransfer:Array[Int] = null
 
     for(i <- (0 until iteratorTime)) {
       if(i == 0) {
@@ -124,6 +122,7 @@ val minDf:Int) {
         }
       }
       val wtParam = sc.broadcast(wtTransfer.clone())
+      wtTransfer = null
 
       wftf.mapPartitions{iter =>
         val wzMatrix = wtParam.value
