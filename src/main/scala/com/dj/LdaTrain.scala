@@ -1,7 +1,7 @@
 package com.dj
 
 import org.apache.spark.rdd.RDD
-import org.apache.spark.{AccumulatorParam, SparkContext, SparkConf,Accumulable}
+import org.apache.spark.{SparkContext, SparkConf}
 import scala.util.Random
 
 /**
@@ -36,7 +36,7 @@ val minDf:Int) {
         words.toIterable
       }
       result.toIterator
-    }.persist()
+    }
 
 
     val wt = wftf.mapPartitions{iter =>
@@ -97,7 +97,7 @@ val minDf:Int) {
         for(i<- 0 until wzMatrix.length) {
           nz(i%topicNumber) += wzMatrix(i)
         }
-        val delta:Array[Int] = Array.fill[Int](wordsAll*topicNumber)(0)
+//        val delta:Array[Int] = Array.fill[Int](wordsAll*topicNumber)(0)
         var probs = Array.fill[Double](topicNumber)(0.0)
         val random = new Random()
 
@@ -114,14 +114,14 @@ val minDf:Int) {
             nzd(topic) -= 1
             nz(topic) -= 1
             wzMatrix(word*topicNumber + topic ) -= 1
-            delta(word*topicNumber + topic) -= 1
+//            delta(word*topicNumber + topic) -= 1
             probs = Array.fill[Double](topicNumber)(0.0)
             likelihood += computeSamplingProbablity(wzMatrix,nzd,nz,word,probs,docSize)
             val nextTopic = sampleDistribution(probs, random)
             nzd(nextTopic) += 1
             nz(nextTopic) += 1
             wzMatrix(word*topicNumber + nextTopic) += 1
-            delta(word*topicNumber + nextTopic) += 1
+//            delta(word*topicNumber + nextTopic) += 1
             (word,nextTopic)
           }.toIterable
         }
@@ -137,10 +137,9 @@ val minDf:Int) {
   private def sampleDistribution(probs:Array[Double], random:Random) :Int = {
     val sample = random.nextDouble()
     var sum = 0.0
-    var returnTopic = probs.length - 1
+    val returnTopic = probs.length - 1
     for(i <- (0 until probs.length)) {
       sum += probs(i)
-//      println(i+" "+sum+" "+sample)
       if(sample < sum)
         return i
     }
@@ -156,13 +155,11 @@ val minDf:Int) {
       val pzd = (nzd(i) + alpha) / (length + topicNumber*alpha)
       probs(i) = pwz * pzd
       norm += probs(i)
-//      println(i+" "+nwz(word*topicNumber+i)+" "+nz(i)+" "+pwz+" "+pzd+" "+probs(i)+" "+norm)
       likelihood += pwz
     }
 
     for(i <- 0 until topicNumber) {
       probs(i) /= norm
-//      println("cao "+i +" "+probs(i))
     }
     likelihood
   }
