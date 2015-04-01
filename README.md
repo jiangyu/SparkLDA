@@ -1,4 +1,4 @@
 # SparkLDA
-implement LDA algorithm using spark\n
-special thanks to @chaozi204\n
+implement LDA algorithm using spark.
+special thanks to @chaozi204 
 http://chaozi204.github.io
