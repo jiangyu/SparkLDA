@@ -16,8 +16,8 @@ val minDf:Int) {
   private var wordsAll:Int = 0
 
   def init = {
-    val initParameters = sc.broadcast(Array(alpha,beta,topicNumber))
     val lines = sc.textFile(inputPath,20)
+    val initParameters = sc.broadcast(Array(alpha,beta,topicNumber))
     val wordsNumber = lines.flatMap(_.split("""\ +""")).distinct(20).count().toInt
     wordsAll = wordsNumber
     val wordsParameters = sc.broadcast(wordsNumber)
@@ -69,6 +69,7 @@ val minDf:Int) {
                     first(i) += second(i)
                   first
                 }
+
 
     println("Docs initialized.")
     (wftf, wt)
@@ -122,10 +123,11 @@ val minDf:Int) {
         }
       }
       val wtParam = sc.broadcast(wtTransfer.clone())
+      if(i != iteratorTime-1)
       wtTransfer = null
 
       wftf.mapPartitions{iter =>
-        val wzMatrix = wtParam.value
+        var wzMatrix = wtParam.value
         var nzd:Array[Int] = Array.fill[Int](topicNumber)(0)
         val nz:Array[Int] = Array.fill[Int](topicNumber)(0)
         for(i<- 0 until wzMatrix.length) {
@@ -156,10 +158,12 @@ val minDf:Int) {
             val nextTopic = sampleDistribution(probs, random)
             nzd(nextTopic) += 1
             nz(nextTopic) += 1
-            wzMatrix(word*topicNumber + nextTopic) += 1
+//            wzMatrix(word*topicNumber + nextTopic) += 1
             doc._2(i) = (word,nextTopic)
           }
         }
+
+        wzMatrix = null
 
         iter
       }
