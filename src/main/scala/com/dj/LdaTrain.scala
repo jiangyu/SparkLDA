@@ -1,6 +1,7 @@
 package com.dj
 
 import org.apache.spark.rdd.RDD
+import org.apache.spark.storage.StorageLevel
 import org.apache.spark.{HashPartitioner, SparkContext, SparkConf}
 import org.apache.spark.SparkContext._
 import scala.util.Random
@@ -10,21 +11,25 @@ import scala.util.Random
  */
 class LdaTrain(val inputPath:String, val outputPath:String, val topicNumber:Int,
                 val iteratorTime:Int, val alpha:Double, val beta:Double,
-val minDf:Int) {
+val minDf:Int) extends Serializable{
   private val conf = new SparkConf().setAppName("LDA")
+//    .registerKryoClasses(Array(classOf[Array[(Int,Int)]],classOf[Array[Int]],classOf[(Int,Array[(Int,Int)])]))
   private val sc = new SparkContext(conf)
   private var wordsAll:Int = 0
 
+
   def init = {
     val lines = sc.textFile(inputPath,20)
-    val initParameters = sc.broadcast(Array(alpha,beta,topicNumber))
+    val partitionNumber = 20
+    val initParameters = sc.broadcast(Array(alpha,beta,topicNumber,partitionNumber))
     val wordsNumber = lines.flatMap(_.split("""\ +""")).distinct(20).count().toInt
     wordsAll = wordsNumber
     val wordsParameters = sc.broadcast(wordsNumber)
 
     val wftf = lines.map{ line =>
       val random = new Random()
-      val number = random.nextInt(20)
+      val partitionNumber = initParameters.value(3).toInt
+      val number = random.nextInt(partitionNumber)
       val topicNumber = initParameters.value(2).toInt
       val words = line.split("""\ +""").map { word =>
         val randomTopic = random.nextInt(topicNumber)
@@ -32,10 +37,13 @@ val minDf:Int) {
         (wordNumber,randomTopic)
       }
       (number,words)
-    }.partitionBy(new HashPartitioner(20)).persist()
+    }.partitionBy(new HashPartitioner(partitionNumber)).persist(StorageLevel.MEMORY_ONLY)
+
 
     val wt = wftf.combineByKey[Array[Int]](
       createCombiner = (v: Array[(Int,Int)]) => {
+        val wordsAll = wordsParameters.value
+        val topicNumber = initParameters.value(2).toInt
         val result = Array.fill[Int](wordsAll*topicNumber)(0)
         for(i <- 0 until v.length) {
           val index = v(i)._1 * topicNumber + v(i)._2
@@ -44,6 +52,7 @@ val minDf:Int) {
         result
       },
       mergeValue = (c: Array[Int], v: Array[(Int,Int)]) => {
+        val topicNumber = initParameters.value(2).toInt
         for(i <- 0 until v.length) {
           val index = v(i)._1 * topicNumber + v(i)._2
           c(index) += 1
@@ -57,6 +66,8 @@ val minDf:Int) {
         c1
       }
     ).repartition(5).mapPartitions{iter =>
+                  val wordsNumber = wordsParameters.value
+                  val topicNumber = initParameters.value(2).toInt
                   val wtLocal = Array.ofDim[Int](1,wordsNumber*topicNumber)
                   for(array <- iter) {
                     for(i <- 0 until array._2.length) {
@@ -75,19 +86,49 @@ val minDf:Int) {
     (wftf, wt)
   }
 
+  private def createCombiner(v: Array[(Int,Int)]) = {
+    val result = Array.fill[Int](wordsAll*topicNumber)(0)
+    for(i <- 0 until v.length) {
+      val index = v(i)._1 * topicNumber + v(i)._2
+      result(index) += 1
+    }
+    result
+  }
+
+  private def mergeValue(c: Array[Int], v: Array[(Int,Int)]) = {
+    for(i <- 0 until v.length) {
+      val index = v(i)._1 * topicNumber + v(i)._2
+      c(index) += 1
+    }
+    c
+  }
+
+  private def mergeCombiners(c1: Array[Int], c2: Array[Int]) = {
+    for(i <- 0 until c1.length) {
+      c1(i) += c2(i)
+    }
+    c1
+  }
+
 
   // Begin iterations
   def train(wftf:RDD[(Int,Array[(Int,Int)])],wt:Array[Int]) = {
     println("Begin iteration for "+iteratorTime+" times")
     var wtTransfer:Array[Int] = null
 
+
     for(i <- (0 until iteratorTime)) {
+      val wordsParameters = sc.broadcast(wordsAll)
+      val initParameters = sc.broadcast(Array(alpha,beta,topicNumber,20))
+
       if(i == 0) {
         wtTransfer = wt
       }
       else {
         wtTransfer = wftf.combineByKey[Array[Int]](
           createCombiner = (v: Array[(Int,Int)]) => {
+            val wordsAll = wordsParameters.value
+            val topicNumber = initParameters.value(2).toInt
             val result = Array.fill[Int](wordsAll*topicNumber)(0)
             for(i <- 0 until v.length) {
               val index = v(i)._1 * topicNumber + v(i)._2
@@ -109,6 +150,8 @@ val minDf:Int) {
             c1
           }
         ).repartition(5).mapPartitions{iter =>
+          val wordsAll = wordsParameters.value
+          val topicNumber = initParameters.value(2).toInt
           val wtLocal = Array.ofDim[Int](1,wordsAll*topicNumber)
           for(array <- iter) {
             for(i <- 0 until array._2.length) {
@@ -124,9 +167,10 @@ val minDf:Int) {
       }
       val wtParam = sc.broadcast(wtTransfer.clone())
       if(i != iteratorTime-1)
-      wtTransfer = null
+        wtTransfer = null
 
       wftf.mapPartitions{iter =>
+        val topicNumber = initParameters.value(2).toInt
         var wzMatrix = wtParam.value
         var nzd:Array[Int] = Array.fill[Int](topicNumber)(0)
         val nz:Array[Int] = Array.fill[Int](topicNumber)(0)
@@ -170,7 +214,30 @@ val minDf:Int) {
 
     }
 
-    sc.makeRDD(wtTransfer).saveAsTextFile(outputPath)
+    var begin = 0
+    var end = 0
+    val times = 5
+    val wordIndex = wordsAll/times
+    var wordBegin = 0
+    var wordEnd = 0
+
+
+    for(i <- 0 until times) {
+      val output:Array[(Int,String)] = Array.fill[(Int,String)](wordIndex)(0,"")
+      wordBegin = i*wordIndex
+      if(i == times - 1) wordEnd = wordsAll
+      else wordEnd = (i+1) * wordIndex - 1
+
+      for(j<- wordBegin until wordEnd) {
+        begin = j * topicNumber
+        end = (j+1)  * topicNumber - 1
+        val temp = for(k<- begin until end)
+          yield wtTransfer(k)
+        output(j%wordIndex) = (j,temp.mkString(" "))
+      }
+
+      sc.makeRDD(output).saveAsTextFile(output+"/"+i)
+    }
 
   }
 
