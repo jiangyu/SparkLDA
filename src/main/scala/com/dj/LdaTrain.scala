@@ -45,7 +45,8 @@ val minDf:Int) extends Serializable{
       createCombiner = (v: Array[(Int,Int)]) => {
         val wordsAll = wordsParameters.value
         val topicNumber = initParameters.value(2).toInt
-        val result = Array.fill[Int](wordsAll*topicNumber)(0)
+//        val result = Array.fill[Int](wordsAll*topicNumber)(0)
+        val result = new Array[Int](wordsAll*topicNumber)
         for(i <- 0 until v.length) {
           val index = v(i)._1 * topicNumber + v(i)._2
           result(index) += 1
@@ -186,18 +187,16 @@ val minDf:Int) extends Serializable{
           nz(i%topicAll) += wzMatrix(i)
         }
 
-        var probs = Array.fill[Double](topicAll)(0.0)
+//        var probs = Array.fill[Double](topicAll)(0.0)
         val random = new Random()
-
+//
         for(doc <- iter) {
-          nzd = Array.fill[Int](topicAll)(0)
+//          nzd = Array.fill[Int](topicAll)(0)
+          val nzd = new Array[Int](topicAll)
           val length = doc._2.length
           for(i <- 0 until length) {
             nzd(doc._2(i)._2) += 1
           }
-
-          var likelihood = 0.0
-          val docSize = doc._2.length
 
           for(i <- 0 until length) {
             val word = doc._2(i)._1
@@ -205,14 +204,15 @@ val minDf:Int) extends Serializable{
             nzd(topic) -= 1
             nz(topic) -= 1
             wzMatrix(word*topicAll + topic ) -= 1
-            probs = Array.fill[Double](topicAll)(0.0)
+//            probs = Array.fill[Double](topicAll)(0.0)
+            val probs = new Array[Double](topicAll)
 
-            //            likelihood += computeSamplingProbablity(wzMatrix,nzd,nz,word,probs,docSize,topicAll,alpha1,beta1)
-            val pzd = (nzd(i) + alpha) / (length + topicAll*alpha)
+//          likelihood += computeSamplingProbablity(wzMatrix,nzd,nz,word,probs,docSize,topicAll,alpha1,beta1)
             var norm = 0.0
             var likelihood = 0.0
             for(i <-(0 until topicAll)) {
               val pwz = (wzMatrix(word*topicAll+i) + beta)  / (nz(i)+wzMatrix.length*beta)
+              val pzd = (nzd(i) + alpha) / (length + topicAll*alpha)
               probs(i) = pwz * pzd
               norm += probs(i)
               likelihood += pwz
