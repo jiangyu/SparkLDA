@@ -5,6 +5,7 @@ import org.apache.spark.storage.StorageLevel
 import org.apache.spark.{HashPartitioner, SparkContext, SparkConf}
 import org.apache.spark.SparkContext._
 import scala.util.Random
+import scala.util.control.Breaks
 
 /**
  * Created by jiangyu on 3/18/15.
@@ -13,7 +14,7 @@ class LdaTrain(val inputPath:String, val outputPath:String, val topicNumber:Int,
                 val iteratorTime:Int, val alpha:Double, val beta:Double,
 val minDf:Int) extends Serializable{
   private val conf = new SparkConf().setAppName("LDA")
-//    .registerKryoClasses(Array(classOf[Array[(Int,Int)]],classOf[Array[Int]],classOf[(Int,Array[(Int,Int)])]))
+    .registerKryoClasses(Array(classOf[Array[(Int,Int)]],classOf[Array[Int]],classOf[(Int,Array[(Int,Int)])]))
   private val sc = new SparkContext(conf)
   private var wordsAll:Int = 0
 
@@ -118,8 +119,10 @@ val minDf:Int) extends Serializable{
 
 
     for(i <- (0 until iteratorTime)) {
-      val wordsParameters = sc.broadcast(wordsAll)
-      val initParameters = sc.broadcast(Array(alpha,beta,topicNumber,20))
+//      val wordsParameters = sc.broadcast(wordsAll)
+//      val initParameters = sc.broadcast(Array(alpha,beta,topicNumber,20))
+      val wordsParameters  = wftf.context.broadcast(wordsAll)
+      val initParameters = wftf.context.broadcast(Array(alpha,beta,topicNumber,20))
 
       if(i == 0) {
         wtTransfer = wt
@@ -127,18 +130,19 @@ val minDf:Int) extends Serializable{
       else {
         wtTransfer = wftf.combineByKey[Array[Int]](
           createCombiner = (v: Array[(Int,Int)]) => {
-            val wordsAll = wordsParameters.value
-            val topicNumber = initParameters.value(2).toInt
-            val result = Array.fill[Int](wordsAll*topicNumber)(0)
+            val wordsSum = wordsParameters.value
+            val topicAll = initParameters.value(2).toInt
+            val result = Array.fill[Int](wordsSum*topicAll)(0)
             for(i <- 0 until v.length) {
-              val index = v(i)._1 * topicNumber + v(i)._2
+              val index = v(i)._1 * topicAll + v(i)._2
               result(index) += 1
             }
             result
           },
           mergeValue = (c: Array[Int], v: Array[(Int,Int)]) => {
+            val topicAll = initParameters.value(2).toInt
             for(i <- 0 until v.length) {
-              val index = v(i)._1 * topicNumber + v(i)._2
+              val index = v(i)._1 * topicAll + v(i)._2
               c(index) += 1
             }
             c
@@ -150,9 +154,9 @@ val minDf:Int) extends Serializable{
             c1
           }
         ).repartition(5).mapPartitions{iter =>
-          val wordsAll = wordsParameters.value
-          val topicNumber = initParameters.value(2).toInt
-          val wtLocal = Array.ofDim[Int](1,wordsAll*topicNumber)
+          val wordsSum = wordsParameters.value
+          val topicAll = initParameters.value(2).toInt
+          val wtLocal = Array.ofDim[Int](1,wordsSum*topicAll)
           for(array <- iter) {
             for(i <- 0 until array._2.length) {
               wtLocal(0)(i) += array._2(i)
@@ -165,24 +169,28 @@ val minDf:Int) extends Serializable{
           first
         }
       }
-      val wtParam = sc.broadcast(wtTransfer.clone())
+//      val wtParam = sc.broadcast(wtTransfer.clone())
+      val wtParam = wftf.context.broadcast(wtTransfer.clone())
       if(i != iteratorTime-1)
         wtTransfer = null
 
+
       wftf.mapPartitions{iter =>
-        val topicNumber = initParameters.value(2).toInt
+        val topicAll = initParameters.value(2).toInt
+        val alpha = initParameters.value(0).toDouble
+        val beta = initParameters.value(1).toDouble
         var wzMatrix = wtParam.value
-        var nzd:Array[Int] = Array.fill[Int](topicNumber)(0)
-        val nz:Array[Int] = Array.fill[Int](topicNumber)(0)
+        var nzd:Array[Int] = Array.fill[Int](topicAll)(0)
+        val nz:Array[Int] = Array.fill[Int](topicAll)(0)
         for(i<- 0 until wzMatrix.length) {
-          nz(i%topicNumber) += wzMatrix(i)
+          nz(i%topicAll) += wzMatrix(i)
         }
 
-        var probs = Array.fill[Double](topicNumber)(0.0)
+        var probs = Array.fill[Double](topicAll)(0.0)
         val random = new Random()
 
         for(doc <- iter) {
-          nzd = Array.fill[Int](topicNumber)(0)
+          nzd = Array.fill[Int](topicAll)(0)
           val length = doc._2.length
           for(i <- 0 until length) {
             nzd(doc._2(i)._2) += 1
@@ -196,12 +204,39 @@ val minDf:Int) extends Serializable{
             val topic = doc._2(i)._2
             nzd(topic) -= 1
             nz(topic) -= 1
-            wzMatrix(word*topicNumber + topic ) -= 1
-            probs = Array.fill[Double](topicNumber)(0.0)
-            likelihood += computeSamplingProbablity(wzMatrix,nzd,nz,word,probs,docSize)
-            val nextTopic = sampleDistribution(probs, random)
-            nzd(nextTopic) += 1
-            nz(nextTopic) += 1
+            wzMatrix(word*topicAll + topic ) -= 1
+            probs = Array.fill[Double](topicAll)(0.0)
+
+            //            likelihood += computeSamplingProbablity(wzMatrix,nzd,nz,word,probs,docSize,topicAll,alpha1,beta1)
+            val pzd = (nzd(i) + alpha) / (length + topicAll*alpha)
+            var norm = 0.0
+            var likelihood = 0.0
+            for(i <-(0 until topicAll)) {
+              val pwz = (wzMatrix(word*topicAll+i) + beta)  / (nz(i)+wzMatrix.length*beta)
+              probs(i) = pwz * pzd
+              norm += probs(i)
+              likelihood += pwz
+            }
+
+            for(i <- 0 until topicAll) {
+              probs(i) /= norm
+            }
+
+//            val nextTopic = sampleDistribution(probs, random)
+            var nextTopic = probs.length - 1
+            val sample = random.nextDouble()
+            var sum = 0.0
+            val loop = new Breaks
+            loop.breakable {
+              for(i <- (0 until probs.length)) {
+                sum += probs(i)
+                if(sample < sum) {
+                  nextTopic = i
+                  loop.break()
+                }
+              }
+            }
+
 //            wzMatrix(word*topicNumber + nextTopic) += 1
             doc._2(i) = (word,nextTopic)
           }
@@ -236,7 +271,7 @@ val minDf:Int) extends Serializable{
         output(j%wordIndex) = (j,temp.mkString(" "))
       }
 
-      sc.makeRDD(output).saveAsTextFile(output+"/"+i)
+      sc.makeRDD(output).saveAsTextFile(outputPath+"/"+i)
     }
 
   }
@@ -254,18 +289,18 @@ val minDf:Int) extends Serializable{
   }
 
   private def computeSamplingProbablity(nwz:Array[Int],nzd:Array[Int], nz:Array[Int],
-                                word:Int,probs:Array[Double],length:Int) : Double = {
+                                word:Int,probs:Array[Double],length:Int,topicAll:Int,alpha1:Double,beta1:Double) : Double = {
     var norm = 0.0
     var likelihood = 0.0
-    for(i <-(0 until topicNumber)) {
-      val pwz = (nwz(word*topicNumber+i) + beta)  / (nz(i)+nwz.length*beta)
-      val pzd = (nzd(i) + alpha) / (length + topicNumber*alpha)
+    for(i <-(0 until topicAll)) {
+      val pwz = (nwz(word*topicAll+i) + beta1)  / (nz(i)+nwz.length*beta1)
+      val pzd = (nzd(i) + alpha1) / (length + topicAll*alpha)
       probs(i) = pwz * pzd
       norm += probs(i)
       likelihood += pwz
     }
 
-    for(i <- 0 until topicNumber) {
+    for(i <- 0 until topicAll) {
       probs(i) /= norm
     }
     likelihood
