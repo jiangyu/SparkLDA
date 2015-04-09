@@ -88,31 +88,6 @@ val minDf:Int) extends Serializable{
     (wftf, wt)
   }
 
-  private def createCombiner(v: Array[(Int,Int)]) = {
-    val result = Array.fill[Int](wordsAll*topicNumber)(0)
-    for(i <- 0 until v.length) {
-      val index = v(i)._1 * topicNumber + v(i)._2
-      result(index) += 1
-    }
-    result
-  }
-
-  private def mergeValue(c: Array[Int], v: Array[(Int,Int)]) = {
-    for(i <- 0 until v.length) {
-      val index = v(i)._1 * topicNumber + v(i)._2
-      c(index) += 1
-    }
-    c
-  }
-
-  private def mergeCombiners(c1: Array[Int], c2: Array[Int]) = {
-    for(i <- 0 until c1.length) {
-      c1(i) += c2(i)
-    }
-    c1
-  }
-
-
   // Begin iterations
   def train(wftf:RDD[(Int,Array[(Int,Int)])],wt:Array[Int]) = {
     println("Begin iteration for "+iteratorTime+" times")
@@ -170,8 +145,8 @@ val minDf:Int) extends Serializable{
           first
         }
       }
-//      val wtParam = sc.broadcast(wtTransfer.clone())
-      val wtParam = wftf.context.broadcast(wtTransfer.clone())
+      val wtParam = sc.broadcast(wtTransfer.clone())
+//      val wtParam = wftf.context.broadcast(wtTransfer.clone())
       if(i != iteratorTime-1)
         wtTransfer = null
 
@@ -180,7 +155,7 @@ val minDf:Int) extends Serializable{
         val topicAll = initParameters.value(2).toInt
         val alpha = initParameters.value(0).toDouble
         val beta = initParameters.value(1).toDouble
-        var wzMatrix = wtParam.value
+        var wzMatrix = wtParam.value.clone()
         var nzd:Array[Int] = Array.fill[Int](topicAll)(0)
         val nz:Array[Int] = Array.fill[Int](topicAll)(0)
         for(i<- 0 until wzMatrix.length) {
@@ -237,7 +212,10 @@ val minDf:Int) extends Serializable{
               }
             }
 
-//            wzMatrix(word*topicNumber + nextTopic) += 1
+            nz(nextTopic)+=1
+            nzd(nextTopic)+=1
+            wzMatrix(word*topicAll + nextTopic) += 1
+
             doc._2(i) = (word,nextTopic)
           }
         }
@@ -261,11 +239,11 @@ val minDf:Int) extends Serializable{
       val output:Array[(Int,String)] = Array.fill[(Int,String)](wordIndex)(0,"")
       wordBegin = i*wordIndex
       if(i == times - 1) wordEnd = wordsAll
-      else wordEnd = (i+1) * wordIndex - 1
+      else wordEnd = (i+1) * wordIndex
 
       for(j<- wordBegin until wordEnd) {
         begin = j * topicNumber
-        end = (j+1)  * topicNumber - 1
+        end = (j+1)  * topicNumber
         val temp = for(k<- begin until end)
           yield wtTransfer(k)
         output(j%wordIndex) = (j,temp.mkString(" "))
