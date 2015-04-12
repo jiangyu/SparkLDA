@@ -73,7 +73,8 @@ object Entry {
       val ldaTrain = new LdaTrain(inputPath,
         outputPath,topicNumber,iteratorTime,alpha,beta,minDf)
       val init = ldaTrain.init
-      ldaTrain.train(init._1,init._2)
+//      ldaTrain.train(init._1,init._2)
+      ldaTrain.train(init)
     } catch {
       case e: ArgotUsageException => println(e.message)
     }
