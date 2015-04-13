@@ -18,7 +18,8 @@ val minDf:Int) extends Serializable{
     .registerKryoClasses(Array(classOf[Array[(Int,Int)]],classOf[Array[Int]],classOf[(Int,Array[(Int,Int)])]))
   private val sc = new SparkContext(conf)
   private var wordsAll:Int = 0
-  private val partitionNumber = 10
+  private val partitionNumber = 36
+  private val repartitionNumber = 6
 
 
   def init = {
@@ -48,64 +49,64 @@ val minDf:Int) extends Serializable{
   // Begin iterations
   def train(wftf:RDD[(Int,Array[(Int,Int)])]) = {
     println("Begin iteration for "+iteratorTime+" times")
-    var wtTransfer:Array[Int] = null
-    var current:RDD[(Int,Array[(Int,Int)])] = wftf
-    var next:RDD[(Int,Array[(Int,Int)])] = null
+    var currentTransfer:Array[Int] = null
+    var nextTransfer:Array[Int] = null
 
     for(i <- (0 until iteratorTime)) {
-      if(i!=0) {
-        current = next
-        next = null
-      }
       val wordsParameters  = wftf.context.broadcast(wordsAll)
       val initParameters = wftf.context.broadcast(Array(alpha,beta,topicNumber,partitionNumber))
 
-      wtTransfer = current.combineByKey[Array[Int]](
-        createCombiner = (v: Array[(Int, Int)]) => {
+      if(i == 0) {
+        currentTransfer = wftf.combineByKey[Array[Int]](
+          createCombiner = (v: Array[(Int, Int)]) => {
+            val wordsSum = wordsParameters.value
+            val topicAll = initParameters.value(2).toInt
+            val result = Array.fill[Int](wordsSum * topicAll)(0)
+            for (i <- 0 until v.length) {
+              val index = v(i)._1 * topicAll + v(i)._2
+              result(index) += 1
+            }
+            result
+          },
+          mergeValue = (c: Array[Int], v: Array[(Int, Int)]) => {
+            val topicAll = initParameters.value(2).toInt
+            for (i <- 0 until v.length) {
+              val index = v(i)._1 * topicAll + v(i)._2
+              c(index) += 1
+            }
+            c
+          },
+          mergeCombiners = (c1: Array[Int], c2: Array[Int]) => {
+            for (i <- 0 until c1.length) {
+              c1(i) += c2(i)
+            }
+            c1
+          }
+        ).repartition(repartitionNumber).mapPartitions { iter =>
           val wordsSum = wordsParameters.value
           val topicAll = initParameters.value(2).toInt
-          val result = Array.fill[Int](wordsSum * topicAll)(0)
-          for (i <- 0 until v.length) {
-            val index = v(i)._1 * topicAll + v(i)._2
-            result(index) += 1
+          val wtLocal = Array.ofDim[Int](1, wordsSum * topicAll)
+          for (array <- iter) {
+            for (i <- 0 until array._2.length) {
+              wtLocal(0)(i) += array._2(i)
+            }
           }
-          result
-        },
-        mergeValue = (c: Array[Int], v: Array[(Int, Int)]) => {
-          val topicAll = initParameters.value(2).toInt
-          for (i <- 0 until v.length) {
-            val index = v(i)._1 * topicAll + v(i)._2
-            c(index) += 1
-          }
-          c
-        },
-        mergeCombiners = (c1: Array[Int], c2: Array[Int]) => {
-          for (i <- 0 until c1.length) {
-            c1(i) += c2(i)
-          }
-          c1
+          wtLocal.toIterator
+        }.reduce { case (first, second) =>
+          for (i <- 0 until first.length)
+            first(i) += second(i)
+          first
         }
-      ).repartition(5).mapPartitions { iter =>
-        val wordsSum = wordsParameters.value
-        val topicAll = initParameters.value(2).toInt
-        val wtLocal = Array.ofDim[Int](1, wordsSum * topicAll)
-        for (array <- iter) {
-          for (i <- 0 until array._2.length) {
-            wtLocal(0)(i) += array._2(i)
-          }
-        }
-        wtLocal.toIterator
-      }.reduce { case (first, second) =>
-        for (i <- 0 until first.length)
-          first(i) += second(i)
-        first
+      } else {
+        currentTransfer = nextTransfer
+        nextTransfer = null
       }
 
-      val wtParam = sc.broadcast(wtTransfer.clone())
-//      val wtParam = wftf.context.broadcast(wtTransfer.clone())
-      wtTransfer = null
 
-      next = current.mapPartitions{iterator =>
+      val wtParam = sc.broadcast(currentTransfer.clone())
+      currentTransfer = null
+
+      nextTransfer = wftf.mapPartitions{iterator =>
         val iter = iterator.toIterable
         val topicAll = initParameters.value(2).toInt
         val alpha = initParameters.value(0).toDouble
@@ -117,7 +118,7 @@ val minDf:Int) extends Serializable{
         }
 
         val random = new Random()
-        //
+
         for(doc <- iter) {
           //          nzd = Array.fill[Int](topicAll)(0)
           val nzd = new Array[Int](topicAll)
@@ -129,7 +130,6 @@ val minDf:Int) extends Serializable{
           for(i <- 0 until length) {
             val word = doc._2(i)._1
             val topic = doc._2(i)._2
-            println(word+" mama "+topic)
             nzd(topic) -= 1
             nz(topic) -= 1
             wzMatrix(word*topicAll + topic ) -= 1
@@ -143,14 +143,13 @@ val minDf:Int) extends Serializable{
               val pwz = (wzMatrix(word*topicAll+i) + beta)  / (nz(i)+wzMatrix.length/topicAll*beta)
               val pzd = (nzd(i) + alpha) / (length + topicAll*alpha)
               probs(i) = pwz * pzd
-//              println(pwz+" "+pzd+" "+probs(i)+" "+i)
+              //              println(pwz+" "+pzd+" "+probs(i)+" "+i)
               norm += probs(i)
               likelihood += pwz
             }
 
             for(i <- 0 until topicAll) {
               probs(i) /= norm
-//              println(i+" "+probs(i))
             }
 
             //            val nextTopic = sampleDistribution(probs, random)
@@ -177,8 +176,46 @@ val minDf:Int) extends Serializable{
         }
 
         wzMatrix = null
-
         iter.toIterator
+      }.combineByKey[Array[Int]](
+        createCombiner = (v: Array[(Int, Int)]) => {
+          val wordsSum = wordsParameters.value
+          val topicAll = initParameters.value(2).toInt
+          val result = Array.fill[Int](wordsSum * topicAll)(0)
+          for (i <- 0 until v.length) {
+            val index = v(i)._1 * topicAll + v(i)._2
+            result(index) += 1
+          }
+          result
+        },
+        mergeValue = (c: Array[Int], v: Array[(Int, Int)]) => {
+          val topicAll = initParameters.value(2).toInt
+          for (i <- 0 until v.length) {
+            val index = v(i)._1 * topicAll + v(i)._2
+            c(index) += 1
+          }
+          c
+        },
+        mergeCombiners = (c1: Array[Int], c2: Array[Int]) => {
+          for (i <- 0 until c1.length) {
+            c1(i) += c2(i)
+          }
+          c1
+        }
+        ).repartition(repartitionNumber).mapPartitions { iter =>
+        val wordsSum = wordsParameters.value
+        val topicAll = initParameters.value(2).toInt
+        val wtLocal = Array.ofDim[Int](1, wordsSum * topicAll)
+        for (array <- iter) {
+          for (i <- 0 until array._2.length) {
+            wtLocal(0)(i) += array._2(i)
+          }
+        }
+        wtLocal.toIterator
+      }.reduce { case (first, second) =>
+        for (i <- 0 until first.length)
+          first(i) += second(i)
+        first
       }
 
     }
@@ -186,8 +223,8 @@ val minDf:Int) extends Serializable{
     val wordsParameters  = wftf.context.broadcast(wordsAll)
     val initParameters = wftf.context.broadcast(Array(alpha,beta,topicNumber,partitionNumber))
 
-    current = null
-    wtTransfer = next.combineByKey[Array[Int]](
+//    current = null
+    currentTransfer = wftf.combineByKey[Array[Int]](
       createCombiner = (v: Array[(Int,Int)]) => {
         val wordsSum = wordsParameters.value
         val topicAll = initParameters.value(2).toInt
@@ -212,7 +249,7 @@ val minDf:Int) extends Serializable{
         }
         c1
       }
-    ).repartition(5).mapPartitions{iter =>
+    ).repartition(repartitionNumber).mapPartitions{iter =>
       val wordsSum = wordsParameters.value
       val topicAll = initParameters.value(2).toInt
       val wtLocal = Array.ofDim[Int](1,wordsSum*topicAll)
@@ -246,7 +283,7 @@ val minDf:Int) extends Serializable{
         begin = j * topicNumber
         end = (j+1)  * topicNumber
         val temp = for(k<- begin until end)
-          yield wtTransfer(k)
+          yield currentTransfer(k)
         output(j%wordIndex) = (j,temp.mkString(" "))
       }
 
